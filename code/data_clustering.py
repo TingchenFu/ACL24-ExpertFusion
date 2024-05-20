@@ -1,6 +1,3 @@
-'''
-Use torch dataset and data loader
-'''
 import torch
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel
@@ -21,13 +18,6 @@ args.add_argument("--batch_size", type=int, default=256)
 args = args.parse_args()
 
 
-
-# Load the tokenizer and model
-# tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
-# tokenizer.pad_token_id = tokenizer.eos_token_id
-# tokenizer.padding_side = "right"
-# model = AutoModel.from_pretrained(args.model_name_or_path,torch_dtype=torch.float16,load_in_8bit=False,device_map='auto')
-# model.eval()
 
 from sentence_transformers import SentenceTransformer
 print(os.path.exists(args.model_name_or_path))
@@ -80,22 +70,14 @@ else:
 corpus_dataset = corpus_dataset(args.dataset_name)
 corpus_dataloader = DataLoader(corpus_dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True, drop_last=False)
 
-# length_idx = np.argsort([len(sen.split(' ')) for sen in corpus])[::-1]
-# corpus_sorted = [corpus[idx] for idx in length_idx]
 
 from tqdm import trange
 from tqdm import tqdm
 hidden_states = []
 with torch.no_grad():
     for batch in tqdm(corpus_dataloader):
-        # print(batch)
-        # exit()
-    #for i in trange(0, len(corpus_sorted), args.batch_size, desc="Batches",disable=False):
-        #print(f"Processing batch {i} to {i+100}")
         feature = model_to_access.tokenize(batch) 
-        # for key in feature:
-        #     if isinstance(batch[key], torch.Tensor):
-        #         feature[key] = feature[key].to(device)
+      
         out_features = model(feature)
         embeddings = out_features['sentence_embedding']
         embeddings = embeddings.detach()
@@ -134,7 +116,3 @@ for i in range(len(corpus_dataset.corpus_length)-1):
     if not os.path.exists('/'.join(output_path.split('/')[:-1])):
         os.makedirs('/'.join(output_path.split('/')[:-1]),exist_ok=True)
     json.dump(cluster_assignments[corpus_dataset.corpus_length[i]:corpus_dataset.corpus_length[i+1]],open(output_path,'w'))
-
-# # Print cluster assignments
-# for sentence, cluster in zip(corpus, cluster_assignments):
-#     print(f"Sentence: '{sentence}' is in cluster {cluster}")

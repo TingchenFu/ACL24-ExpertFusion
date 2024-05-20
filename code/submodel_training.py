@@ -39,7 +39,6 @@ from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-# xxx: 2023-04-11
 import copy
 import json
 from transformers import TrainingArguments
@@ -52,11 +51,6 @@ from peft import (
 )
 
 
-# Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-# check_min_version("4.27.0.dev0")
-
-# require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt")
-
 logger = logging.getLogger(__name__)
 
 
@@ -64,7 +58,7 @@ MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
-# xxx: 2023-03-21
+
 IGNORE_INDEX = -100
 
 
@@ -146,9 +140,6 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    dataset_name: Optional[str] = field(
-        default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
-    )
     dataset_config_name: Optional[str] = field(
         default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
     )
@@ -157,8 +148,8 @@ class DataTrainingArguments:
         default=None,
         metadata={"help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."},
     )
-    cluster_dir: Optional[str] = field(default=None, metadata={"help": "The cluster id of each input sentences"}) 
     cluster_id: Optional[str] = field(default=None, metadata={"help": "The cluster id to train on"}) 
+    cluster_file: Optional[str] = field(default=None, metadata={"help": "The cluster file to train on"})
     data_ratio: Optional[float] = field(default=1.0, metadata={"help": "The ratio of data to train on"})
     max_train_samples: Optional[int] = field(
         default=None,
@@ -210,24 +201,24 @@ class DataTrainingArguments:
         if self.streaming:
             require_version("datasets>=2.0.0", "The streaming feature requires `datasets>=2.0.0`")
         
-        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
-            raise ValueError("Need either a dataset name or a training/validation file.")
-        if ',' in self.dataset_name:
-            self.dataset_name = self.dataset_name.split(',')
-        else:
-            self.dataset_name = [self.dataset_name]
+
         if ',' in self.train_file:
             self.train_file = self.train_file.split(',')
         else:
             self.train_file = [self.train_file]
+
+        if ',' in self.cluster_file:
+            self.cluster_file = self.cluster_file.split(',')
+        else:
+            self.cluster_file = [self.cluster_file]
+        
+        assert len(self.train_file) == len(self.cluster_file), "The number of train files and cluster files should be the same"
         
         if  self.cluster_id and '+' not in self.cluster_id:
             self.cluster_id = [int(self.cluster_id)]
         elif self.cluster_id:
             self.cluster_id = [int(x) for x in self.cluster_id.split('+')]
-        
-# # xxx: 2023-04-11, customized args
-# @add_start_docstrings(TrainingArguments.__doc__)
+
 @dataclass
 class PEFTArguments:
     peft_type: str = field(
@@ -268,7 +259,7 @@ class QuantArguments:
 
 def main():
 
-    # xxx: 2023-04-12
+
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, PEFTArguments, QuantArguments,  TrainingArguments ))
     #parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
@@ -331,22 +322,20 @@ def main():
     dataset_args = {}
     if data_args.train_file is not None:
         data_files["train"] = data_args.train_file
-        assert len(data_args.train_file) == len(data_args.dataset_name)
+        assert len(data_args.train_file) == len(data_args.train_file)
     if data_args.validation_file is not None:
         data_files["validation"] = data_args.validation_file
 
-    if data_args.cluster_dir is not None:
+    if data_args.cluster_id is not None:
         from datasets import DatasetDict
         count_one_cluster=[]
         count_all_cluster=[]
         one_cluster_all_dataset = []
-        for dataset_name,train_file in zip(data_args.dataset_name,data_args.train_file):
+        for train_file, cluster_file in zip(data_args.train_file,  data_args.cluster_file):
             single_dataset_all_cluster = load_dataset(
                 'json',
                 data_files=train_file,
             )
-            cluster_file = os.path.join(data_args.cluster_dir,dataset_name+'.json')
-            assert os.path.exists(cluster_file)
             cluster = json.load(open(cluster_file))
             assert len(cluster) == len(single_dataset_all_cluster['train'])
             keep_indices = [x for x in range(len(single_dataset_all_cluster['train'])) if cluster[x] in data_args.cluster_id ] 
@@ -354,7 +343,7 @@ def main():
             one_cluster_all_dataset.append(single_dataset_one_cluster)
             count_one_cluster.append(len(single_dataset_one_cluster))
             count_all_cluster.append(len(single_dataset_all_cluster['train']))
-        assert len(one_cluster_all_dataset) == len(data_args.dataset_name)
+        assert len(one_cluster_all_dataset) == len(data_args.train_file)
         raw_datasets = DatasetDict({'train':concatenate_datasets(one_cluster_all_dataset)})
         assert len(raw_datasets['train']) == sum(count_one_cluster)
     else:
@@ -426,7 +415,7 @@ def main():
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
-    # xxx: 2023-03-21, add padding
+
 
 
     if tokenizer.pad_token is None:
@@ -453,9 +442,7 @@ def main():
             if model_args.torch_dtype in ["auto", None]
             else getattr(torch, model_args.torch_dtype)
         )
-        # xxx: 2023-04-11, LoRA
-        # xxx: int8 is not compatible with DeepSpeed (require not to pass device_map)
-        # xxx: 8bit models should not be converted to DDP
+
         model = AutoModelForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -477,7 +464,7 @@ def main():
         model.resize_token_embeddings(len(tokenizer))
 
 
-    # xxx: 2023-04-11, setup LoRA
+
     if peft_args.peft_type == "lora":
         lora_config = LoraConfig(
             r = peft_args.lora_r,
@@ -496,10 +483,10 @@ def main():
         setattr(model, 'is_parallelizable', True)
 
    
-    # xxx: 2023-03-14
+
     tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
 
-    def template_function(example,dataset_name):
+    def template_function(example):
         PROMPT_DICT = {
             "prompt_with_input": (
                 "Below is an instruction that describes a task, paired with an input that provides further context. "
@@ -520,8 +507,7 @@ def main():
             example['text'] = example['output']  
         return example
 
-    # xxx: 2023-05-17, leave padding to DataCollatorForSeq2Seq for batch padding and avoid unnecessary paddings
-    def preprocess_function(examples,dataset_name):
+    def preprocess_function(examples):
         with CaptureLogger(tok_logger) as cl:
             # xxx: 2023-04-07; text: target, prefix: source
             text = examples["text"]  # may have multiple strings
@@ -542,7 +528,6 @@ def main():
         return text_tokenized
 
 
-    # xxx: 2023-03-17
     with training_args.main_process_first(desc="example per line with padding"):
         if not data_args.streaming:
             templated_datasets = raw_datasets.map(
@@ -551,7 +536,6 @@ def main():
                 num_proc=data_args.preprocessing_num_workers,
                 remove_columns= ['instruction','input','output'],
                 #load_from_cache_file=not data_args.overwrite_cache,
-                fn_kwargs={'dataset_name':data_args.dataset_name},
                 desc=f"Tokenize with padding",
             )
         else:
@@ -569,7 +553,6 @@ def main():
                 batched=True,
                 num_proc=data_args.preprocessing_num_workers,
                 remove_columns=['prefix','text'],
-                fn_kwargs={'dataset_name':data_args.dataset_name},
                 #load_from_cache_file=not data_args.overwrite_cache,
                 desc=f"Tokenize with padding",
             )
@@ -582,8 +565,6 @@ def main():
 
 
     if training_args.do_train:
-        #if "train" not in tokenized_datasets:
-        # xxx: 2023-03-14
         if "train" not in lm_datasets:
             raise ValueError("--do_train requires a train dataset")
         train_dataset = lm_datasets["train"]
@@ -593,12 +574,11 @@ def main():
             train_dataset = train_dataset.select(range(max_train_samples))
         # xxx: print samples
         logger.info("xxx: Show the number of tokenized training sample {}. ".format(len(train_dataset)))
-        if data_args.cluster_dir is not None:
+        if data_args.cluster_id is not None:
             logger.info("xxx: The number of training samples in cluster {} is {}:{} out of {}:{}.".format(data_args.cluster_id,len(train_dataset),count_one_cluster,sum(count_all_cluster),count_all_cluster))
 
     if training_args.do_eval:
-        #if "validation" not in tokenized_datasets:
-        # xxx: 2023-03-14
+
         if "validation" not in lm_datasets:
             raise ValueError("--do_eval requires a validation dataset")
         eval_dataset = lm_datasets["validation"]
@@ -623,7 +603,6 @@ def main():
             preds = preds[:, :-1].reshape(-1)
             return metric.compute(predictions=preds, references=labels)
 
-    # xxx: 2023-04-13, load pretrained adapter weights
     if training_args.do_train:
         checkpoint = None
         # resume_from_checkpoint is prefered
@@ -631,7 +610,6 @@ def main():
             checkpoint = training_args.resume_from_checkpoint
         elif last_checkpoint is not None:
             checkpoint = last_checkpoint
-        # xxx: checkpoint is a folder
         if checkpoint:
             peft_model_name = os.path.join(checkpoint, "adapter_model.bin")
             if os.path.exists(peft_model_name):
